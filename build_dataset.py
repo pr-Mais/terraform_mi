@@ -906,9 +906,33 @@ class DatasetBuilder:
 
                 if not os.path.isdir(repo_path):
                     print(
-                        f"\n[{idx}/{len(repositories)}] [SKIP] {repo_full_name} - not found locally"
+                        f"\n[{idx}/{len(repositories)}] [CLONE] {repo_full_name} - not found locally, cloning..."
                     )
-                    continue
+                    # Create corpus directory if it doesn't exist
+                    os.makedirs(CLONE_DIRECTORY, exist_ok=True)
+
+                    # Clone the repository
+                    clone_url = f"https://github.com/{repo_full_name}.git"
+                    clone_cmd = ["git", "clone", clone_url, repo_path]
+
+                    try:
+                        result = subprocess.run(
+                            clone_cmd,
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=300  # 5 minute timeout
+                        )
+                        print(f"  ✓ Successfully cloned {repo_full_name}")
+                    except subprocess.TimeoutExpired:
+                        print(f"  ✗ Clone timeout for {repo_full_name} (>5 minutes)")
+                        continue
+                    except subprocess.CalledProcessError as e:
+                        print(f"  ✗ Clone failed for {repo_full_name}: {e.stderr.strip()}")
+                        continue
+                    except Exception as e:
+                        print(f"  ✗ Unexpected error cloning {repo_full_name}: {e}")
+                        continue
 
                 blocks = self._process_single_repository(
                     repo_full_name, repo_path, writer, idx, len(repositories)
