@@ -5,10 +5,11 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import requests
 from dotenv import load_dotenv
+from dateutil.relativedelta import relativedelta
 
 # Try to import GitPython and dateutil.parser, which are essential
 try:
@@ -36,18 +37,16 @@ CLONE_DIRECTORY = "iac_corpus"
 TARGET_FILE_EXTENSION = ".tf"
 
 # GitHub API & Search Settings
-# Following the paper's methodology: Code Search API with extension:tf
-SEARCH_QUERY = "extension:tf"
-GITHUB_API_URL_SEARCH = "https://api.github.com/search/code"
+GITHUB_API_URL_SEARCH_CODE = "https://api.github.com/search/code"
+GITHUB_API_URL_SEARCH_REPOS = "https://api.github.com/search/repositories"
 GITHUB_API_URL_REPOS = "https://api.github.com/repos"
 MAX_WORKERS = 10  # For concurrent API calls
-SEARCH_ITERATIONS = 20  # Number of times to search with different sort orders
 
 # --- CRITERIA THRESHOLDS ---
-C1_MIN_MONTHLY_COMMITS = 7.0
-C2_CORE_CONTRIBUTOR_THRESHOLD = 0.80  # 80%
+C1_MIN_MONTHLY_COMMITS = 3.0  # Relaxed from 7.0 - at least 3 commits/month
+C2_CORE_CONTRIBUTOR_THRESHOLD = 0.50  # Relaxed from 80% to 50% - top-two contributors
 C3_RECENT_PUSH_DAYS = 180  # 6 months
-C4_MIN_IAC_RATIO = 0.11  # 11%
+C4_MIN_IAC_RATIO = 0.05  # Relaxed from 11% to 5% - at least 5% IaC files
 
 # Exclusion keywords for non-research projects (templates, examples, etc.)
 EXCLUSION_KEYWORDS = [
@@ -145,21 +144,35 @@ def get_repo_details_and_filter(repo_full_name, headers):
         else:
             return None
 
+        # 5. MINIMUM CONTRIBUTOR COUNT (at least 2 contributors for collaboration)
+        # Use a lighter check: forks_count as proxy for collaboration interest
+        # Actual contributor analysis happens in Phase 3 (C2 criterion)
+        if details.get("forks_count", 0) < 1:
+            return None  # At least 1 fork suggests some collaboration interest
+
         return repo_full_name
 
     except requests.exceptions.RequestException:
         return None
 
 
-def search_code_with_sort(headers, query, sort_by="indexed", order="desc"):
+def search_repositories_with_sort(headers, base_query, date_range=None, sort_by="stars", order="desc"):
     """
-    Searches GitHub code API with specific sorting.
+    Searches GitHub repository API with specific sorting.
+    Date qualifiers are part of the query string.
+
+    Args:
+        base_query: Base search query (e.g., "terraform in:name,description")
+        date_range: Date range tuple (start_date, end_date) in YYYY-MM-DD format
+        sort_by: Sort parameter (stars, forks, updated, etc.)
+        order: Order parameter (desc, asc)
+
     Returns set of unique repository names from search results.
     """
     repos = set()
     page = 1
 
-    while page <= 10:  # GitHub's API limit
+    while page <= 10:  # GitHub's API limit (1000 results max)
         remaining_search, wait_time = check_rate_limit(headers)
 
         if remaining_search < 1:
@@ -167,17 +180,26 @@ def search_code_with_sort(headers, query, sort_by="indexed", order="desc"):
             time.sleep(wait_time + 5)
             continue
 
+        # Build query with date range
+        query = base_query
+        if date_range:
+            start_date, end_date = date_range
+            query = f"{base_query} pushed:{start_date}..{end_date}"
+
         params = {
             "q": query,
-            "sort": sort_by,
-            "order": order,
             "per_page": 100,
             "page": page,
         }
 
+        # Only add sort/order if sort_by is provided
+        if sort_by:
+            params["sort"] = sort_by
+            params["order"] = order
+
         try:
             response = requests.get(
-                GITHUB_API_URL_SEARCH, headers=headers, params=params, timeout=10
+                GITHUB_API_URL_SEARCH_REPOS, headers=headers, params=params, timeout=10
             )
 
             if response.status_code == 403:
@@ -191,14 +213,15 @@ def search_code_with_sort(headers, query, sort_by="indexed", order="desc"):
 
             if page == 1:
                 total = data.get("total_count", 0)
-                print(f"  Sort={sort_by}, Order={order}: {total} total results available")
+                print(f"  Query: {query}")
+                print(f"  Total results: {total}")
 
             if not items:
                 break
 
-            # Extract unique repository names from code search results
+            # Extract unique repository names from repository search results
             for item in items:
-                repo_full_name = item["repository"]["full_name"]
+                repo_full_name = item["full_name"]
                 repos.add(repo_full_name)
 
             page += 1
@@ -226,8 +249,8 @@ def batch_filter_repositories(repo_names, headers, lock, found_repositories):
 
 def phase_1_github_mining():
     """
-    Following the paper's methodology: Search Code API with extension:tf
-    using multiple sort strategies to maximize unique repository discovery.
+    Time-based search strategy with Terraform/HCL filtering.
+    Uses monthly time windows from 2024 to discover active repositories.
     """
     if not GITHUB_TOKEN:
         print("[CRITICAL] GITHUB_TOKEN not found. Cannot proceed with mining.")
@@ -238,37 +261,57 @@ def phase_1_github_mining():
         "Accept": "application/vnd.github.v3+json",
     }
 
-    print("--- PHASE 1: GitHub Code Mining (Following Paper Methodology) ---")
-    print("Searching for .tf files using Code Search API with multiple sort strategies\n")
+    print("--- PHASE 1: GitHub Code Mining (Time-Based Search) ---")
+    print("Searching for Terraform files using monthly time windows from 2024\n")
 
     all_raw_repos = set()
 
-    # Strategy from paper: Use different sorting methods to get diverse results
-    sort_strategies = [
-        ("indexed", "desc"),  # Recently indexed (paper's main strategy)
-        ("indexed", "asc"),  # Oldest indexed
-        ("", "desc"),  # Best match/relevance
-    ]
+    # Generate monthly time windows from Jan 1, 2024 to today
+    time_windows = []
+    start_of_2024 = datetime(2024, 1, 1)
+    current_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    current_window_start = start_of_2024
 
-    print(
-        f"Running {len(sort_strategies)} search strategies, {SEARCH_ITERATIONS} iterations each...\n"
-    )
+    while current_window_start < current_date:
+        window_end_dt = current_window_start + relativedelta(months=1)
+        window_end = min(window_end_dt - timedelta(days=1), current_date)
 
-    for iteration in range(SEARCH_ITERATIONS):
-        print(f"\n=== Iteration {iteration + 1}/{SEARCH_ITERATIONS} ===")
+        start_str = current_window_start.strftime("%Y-%m-%d")
+        end_str = window_end.strftime("%Y-%m-%d")
 
-        for sort_by, order in sort_strategies:
-            repos = search_code_with_sort(headers, SEARCH_QUERY, sort_by, order)
+        if current_window_start <= window_end:
+            time_windows.append((start_str, end_str))
+
+        current_window_start = window_end_dt
+
+    print(f"Searching across {len(time_windows)} monthly time windows (2024-present)\n")
+
+    # Search each time window
+    for idx, (start_date, end_date) in enumerate(time_windows, 1):
+        print(f"\n=== Time Window {idx}/{len(time_windows)}: {start_date} to {end_date} ===")
+
+        # Search for quality Terraform repositories
+        # Using language:HCL with minimum stars for active/quality projects
+        base_query = "language:HCL stars:>=5"
+        date_range = (start_date, end_date)
+
+        try:
+            repos = search_repositories_with_sort(
+                headers,
+                base_query=base_query,
+                date_range=date_range,
+                sort_by="stars",
+                order="desc"
+            )
             new_repos = repos - all_raw_repos
             all_raw_repos.update(repos)
+            print(f"  Found: +{len(new_repos)} new repos (Total unique: {len(all_raw_repos)})")
+        except Exception as e:
+            print(f"  [ERROR] {e}")
 
-            sort_label = f"{sort_by}:{order}" if sort_by else "relevance"
-            print(f"  {sort_label}: +{len(new_repos)} new repos " f"(Total: {len(all_raw_repos)})")
-
-        # Sleep between iterations to avoid hitting rate limits
-        if iteration < SEARCH_ITERATIONS - 1:
-            print("  Waiting 10s before next iteration...")
-            time.sleep(10)
+        # Brief pause to respect rate limits
+        if idx < len(time_windows):
+            time.sleep(2)
 
     print(f"\n{'='*80}")
     print(f"[COLLECTED] {len(all_raw_repos)} unique repositories from code search")
@@ -280,7 +323,7 @@ def phase_1_github_mining():
 
     print("[FILTERING] Applying C3 and non-research filters in parallel...\n")
 
-    # Step 2: Filter repos in parallel batches
+    # Filter repositories
     found_repositories = set()
     repo_list = list(all_raw_repos)
     batch_size = 50
@@ -311,7 +354,6 @@ def phase_1_github_mining():
 
     print(f"Repository list saved to {REPO_LIST_FILE_C3_FILTERED}")
     return len(found_repositories)
-
 
 # =========================================================================
 # PHASE 2: CLONING REPOSITORIES

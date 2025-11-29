@@ -774,7 +774,7 @@ class DatasetBuilder:
         "start_line",
         "end_line",
         "loc",
-        "code",
+        "code_id",  # Reference to code stored in JSON file
         # TerraMetric metrics
         "tm_loc",
         "tm_num_variables",
@@ -832,6 +832,8 @@ class DatasetBuilder:
         self.terrametric_runner = TerraMetricRunner()
         self.github_fetcher = GitHubAttributesFetcher(github_token) if github_token else None
         self.mi_calculator = MaintainabilityIndexCalculator()
+        self.code_storage = {}  # Store code blocks: {code_id: code_string}
+        self.code_counter = 0  # Counter for generating unique code IDs
         self.skip_github = skip_github or not github_token
 
         # Check TerraMetric installation
@@ -879,23 +881,36 @@ class DatasetBuilder:
 
         # Process as a single repository
         with open(output_csv, "w", newline="", encoding="utf-8") as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=self.CSV_HEADERS)
+            writer = csv.DictWriter(
+                csvfile,
+                fieldnames=self.CSV_HEADERS,
+                quoting=csv.QUOTE_MINIMAL  # Let CSV module handle quoting automatically
+            )
             writer.writeheader()
 
             total_blocks = self._process_single_repository(
                 repo_name, repo_path, writer, idx=1, total=1
             )
 
+        # Save code storage to JSON file
+        json_file = output_csv.replace(".csv", "_code.json")
+        self._save_code_storage(json_file)
+
         print("\n" + "=" * 80)
         print("Dataset building complete!")
         print(f"Total code blocks extracted: {total_blocks}")
         print(f"Dataset saved to: {output_csv}")
+        print(f"Code blocks saved to: {json_file}")
         print("=" * 80)
 
     def _process_repositories(self, repositories: List[str], output_csv: str):
         """Process multiple repositories and write to CSV."""
         with open(output_csv, "w", newline="", encoding="utf-8") as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=self.CSV_HEADERS)
+            writer = csv.DictWriter(
+                csvfile,
+                fieldnames=self.CSV_HEADERS,
+                quoting=csv.QUOTE_MINIMAL  # Let CSV module handle quoting automatically
+            )
             writer.writeheader()
 
             total_blocks = 0
@@ -942,11 +957,16 @@ class DatasetBuilder:
                 if (idx % 10) == 0:
                     print(f"  Progress: {total_blocks} total blocks so far")
 
+        # Save code storage to JSON file
+        json_file = output_csv.replace(".csv", "_code.json")
+        self._save_code_storage(json_file)
+
         print("\n" + "=" * 80)
         print("Dataset building complete!")
         print(f"Total repositories processed: {len(repositories)}")
         print(f"Total code blocks extracted: {total_blocks}")
         print(f"Dataset saved to: {output_csv}")
+        print(f"Code blocks saved to: {json_file}")
         print("=" * 80)
 
     def _process_single_repository(
@@ -1030,6 +1050,19 @@ class DatasetBuilder:
         gh_attrs: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Create a CSV row from block data."""
+        # Generate unique code ID and store the code separately
+        self.code_counter += 1
+        code_id = f"code_{self.code_counter:06d}"
+        self.code_storage[code_id] = {
+            "code": block["code"],
+            "repository": repo_name,
+            "file_path": block["file_path"],
+            "block_type": block["block_type"],
+            "block_name": block["block_name"],
+            "start_line": block["start_line"],
+            "end_line": block["end_line"],
+        }
+
         return {
             "repository": repo_name,
             "file_path": block["file_path"],
@@ -1038,7 +1071,7 @@ class DatasetBuilder:
             "start_line": block["start_line"],
             "end_line": block["end_line"],
             "loc": block["loc"],
-            "code": block["code"].replace("\n", "\\n"),
+            "code_id": code_id,  # Reference to code in JSON file
             **tm_metrics,
             "maintainability_index": mi,
             **gh_attrs,
@@ -1064,11 +1097,18 @@ class DatasetBuilder:
             "start_line": min(block["start_line"] for block in blocks),
             "end_line": max(block["end_line"] for block in blocks),
             "loc": total_loc,
-            "code": "",
+            "code_id": "",  # No code for summary rows
             **empty_metrics,
             "maintainability_index": round(avg_mi, 2),
             **gh_attrs,
         }
+
+    def _save_code_storage(self, json_file: str):
+        """Save code storage dictionary to JSON file."""
+        import json
+        with open(json_file, "w", encoding="utf-8") as f:
+            json.dump(self.code_storage, f, indent=2, ensure_ascii=False)
+        print(f"Code blocks saved to: {json_file}")
 
 
 if __name__ == "__main__":
