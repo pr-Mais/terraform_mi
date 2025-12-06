@@ -43,10 +43,10 @@ GITHUB_API_URL_REPOS = "https://api.github.com/repos"
 MAX_WORKERS = 10  # For concurrent API calls
 
 # --- CRITERIA THRESHOLDS ---
-C1_MIN_MONTHLY_COMMITS = 3.0  # Relaxed from 7.0 - at least 3 commits/month
-C2_CORE_CONTRIBUTOR_THRESHOLD = 0.50  # Relaxed from 80% to 50% - top-two contributors
+C1_MIN_MONTHLY_COMMITS = 5.0  # At least 5 commits/month for active development
+C2_CORE_CONTRIBUTOR_THRESHOLD = 0.65  # Top-two contributors at least 65% of commits
 C3_RECENT_PUSH_DAYS = 180  # 6 months
-C4_MIN_IAC_RATIO = 0.05  # Relaxed from 11% to 5% - at least 5% IaC files
+C4_MIN_IAC_RATIO = 0.11  # At least 11% IaC files
 
 # Exclusion keywords for non-research projects (templates, examples, etc.)
 EXCLUSION_KEYWORDS = [

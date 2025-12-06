@@ -126,16 +126,26 @@ def analyze_repositories():
 
     console.print("\n[bold]Build Quality Metrics Dataset[/bold]\n")
 
-    repo_list = Path("output/iac_repositories_final_filtered.txt")
+    # Check for repository list file
+    repo_list_path = Prompt.ask(
+        "Repository list file",
+        default="output/iac_repositories_final_filtered.txt"
+    ).strip()
+
+    if not repo_list_path:
+        console.print("[yellow]Cancelled[/yellow]")
+        return
+
+    repo_list = Path(repo_list_path).expanduser().resolve()
+
     if not repo_list.exists():
         console.print(f"[red]Error: Repository list not found at {repo_list}[/red]")
-        console.print("[yellow]Run 'mine' command first to generate repository list[/yellow]")
         return
 
     with open(repo_list, encoding="utf-8") as f:
         repo_count = len([line for line in f if line.strip()])
 
-    console.print(f"[green]Found {repo_count} repositories to analyze[/green]\n")
+    console.print(f"\n[green]Found {repo_count} repositories to analyze[/green]\n")
 
     steps = Table(show_header=False, box=box.SIMPLE, padding=(0, 1))
     steps.add_column(style="dim")
@@ -169,25 +179,14 @@ def quick_analysis():
 
     console.print("\n[bold]Quick Repository Analysis[/bold]\n")
 
-    repo_path = questionary.path(
-        "Enter local repository path:",
-        only_directories=True,
-        style=questionary.Style(
-            [
-                ("qmark", "fg:cyan bold"),
-                ("question", "bold"),
-                ("pointer", "fg:cyan bold"),
-                ("text", ""),
-            ]
-        ),
-    ).ask()
+    repo_path_input = Prompt.ask("Enter local repository path").strip()
 
-    if not repo_path:
+    if not repo_path_input:
         console.print("[yellow]Cancelled[/yellow]")
         return
 
     # Expand ~ and resolve to absolute path
-    repo_path = Path(repo_path).expanduser().resolve()
+    repo_path = Path(repo_path_input).expanduser().resolve()
 
     if not repo_path.exists():
         console.print(f"[red]Error: Path does not exist: {repo_path}[/red]")

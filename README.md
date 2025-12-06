@@ -9,6 +9,31 @@ Tools for mining Terraform repositories and calculating HCL-specific maintainabi
 python main.py
 ```
 
+## Workflows
+
+### Option 1: Analyze from Repository List
+
+```bash
+# 1. Create a text file with repository names (one per line)
+cat > repos.txt <<EOF
+terraform-aws-modules/terraform-aws-vpc
+hashicorp/terraform-provider-aws
+EOF
+
+# 2. Run analysis (automatically clones missing repos)
+python main.py  # Select: Analyze repositories → Use repos.txt
+```
+
+### Option 2: Mine from GitHub (Requires GITHUB_TOKEN)
+
+```bash
+# 1. Set GitHub token
+echo "GITHUB_TOKEN=your_token" > .env
+
+# 2. Run mining and analysis
+python main.py  # Select: Mine Terraform repositories
+```
+
 ## Tools
 
 ### 1. `main.py` - Interactive CLI
@@ -58,6 +83,25 @@ HCL-specific score (0-100) based on:
 - Operational Readiness (10%): Outputs, data sources
 
 See [MI_CALCULATION.md](MI_CALCULATION.md) for details.
+
+## Modeling
+
+### Train Classification Models
+
+Predict code quality (Good vs Needs Work) from metrics:
+
+```bash
+# Train both Logistic Regression and Random Forest
+python train_classifier.py --input output/iac_dataset.csv
+
+# Custom threshold (default: 70)
+python train_classifier.py --threshold 75
+
+# Adjust train/test split (default: 80/20)
+python train_classifier.py --test-size 0.3
+```
+
+**Output**: Model comparison, feature importance, and performance metrics
 
 ## Setup
 
